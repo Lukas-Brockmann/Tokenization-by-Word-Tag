@@ -1,7 +1,15 @@
 import numpy as np
 import tokenizers
+import json
+import tempfile
+import os
+from typing import Dict, List, Tuple, Union
+import pandas as pd
 
-def train_tokenizer(text, vocab_size, special_tokens=["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"]):
+
+def train_tokenizer(
+    text, vocab_size, special_tokens=["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"]
+):
     """
     Trains a BPE tokenizer on the provided text.
 
@@ -22,24 +30,27 @@ def train_tokenizer(text, vocab_size, special_tokens=["[UNK]", "[PAD]", "[CLS]",
 
     """
     if vocab_size < len(special_tokens):
-        raise ValueError("Vocab size must be greater than the number of special tokens.")
+        raise ValueError(
+            "Vocab size must be greater than the number of special tokens."
+        )
     if not isinstance(text, list) or len(text) == 0:
         raise ValueError("Text must be a non-empty list of strings.")
     if not isinstance(vocab_size, int) or vocab_size <= 0:
         raise ValueError("Vocab size must be a positive integer.")
-        
+
     bpe = tokenizers.Tokenizer(tokenizers.models.BPE(unk_token="<UNK>"))
 
     # Preprocessing
-    bpe.normalizer = tokenizers.normalizers.Sequence([
-        tokenizers.normalizers.NFD(), # Unicode Normalizer
-        tokenizers.normalizers.Lowercase(),
-        tokenizers.normalizers.StripAccents()
-    ])
-    bpe.pre_tokenizer = tokenizers.pre_tokenizers.Sequence([
-        tokenizers.pre_tokenizers.Metaspace()
-    ])
-
+    bpe.normalizer = tokenizers.normalizers.Sequence(
+        [
+            tokenizers.normalizers.NFD(),  # Unicode Normalizer
+            tokenizers.normalizers.Lowercase(),
+            tokenizers.normalizers.StripAccents(),
+        ]
+    )
+    bpe.pre_tokenizer = tokenizers.pre_tokenizers.Sequence(
+        [tokenizers.pre_tokenizers.Metaspace()]
+    )
 
     # Trainer
     bpe_trainer = tokenizers.trainers.BpeTrainer(
@@ -54,13 +65,61 @@ def train_tokenizer(text, vocab_size, special_tokens=["[UNK]", "[PAD]", "[CLS]",
     bpe.post_processor = tokenizers.processors.TemplateProcessing(
         single=f"[CLS]:0 $A:0 [SEP]:0",
         pair=f"[CLS]:0 $A:0 [SEP]:0 $B:1 [SEP]:1",
-        special_tokens=[("[CLS]", bpe.token_to_id("[CLS]")), ("[SEP]", bpe.token_to_id("[SEP]"))],
+        special_tokens=[
+            ("[CLS]", bpe.token_to_id("[CLS]")),
+            ("[SEP]", bpe.token_to_id("[SEP]")),
+        ],
     )
-    bpe.decoder = tokenizers.decoders.Metaspace(replacement ="▁")
+    bpe.decoder = tokenizers.decoders.Metaspace(replacement="▁")
 
     return bpe
 
-def assign_proportionally(current, target, n):
+
+def extract_vocab_and_merges(
+    tokenizer: tokenizers.Tokenizer,
+) -> Tuple[Dict[str, int], List[Tuple[str, str]]]:
+    """
+    Given a Tokenizer from the Hugging Face tokenizers library, get the merges performed
+
+    Args:
+        tokenizer (Tokenizer): A Hugging Face Tokenizer object.
+
+    Returns:
+        vocab (dict): A dictionary mapping tokens to their IDs.
+        merges (list): A list of (token1, token2) tuples representing merge rules.
+    """
+    with tempfile.NamedTemporaryFile("w+", delete=False, suffix=".json") as tmp_file:
+        path = tmp_file.name
+        tokenizer.save(path)
+
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+
+        return data["model"]["vocab"], [
+            tuple(merge) for merge in data["model"]["merges"]
+        ]
+
+    finally:
+        os.remove(path)
+
+def assign_proportionally(current, target, n) -> np.ndarray:
+    """
+    Assigns n new tokens to the current list of tokens based on the target proportions.
+    Args:
+        current (list): Current distribution.
+        target (list): Desired distribution of tokens in percent.
+        n (int): Number of new tokens to assign.
+    Returns:
+        np.ndarray: Array of indices that can be added to current, while maintaining the target proportions.
+    Raises:
+        AssertionError: If the lengths of current and target do not match
+        AssertionError: If n is not a positive integer.
+        AssertionError: If any element in current is negative
+        AssertionError: If any element in target is negative.
+        AssertionError: If the sum of target does not equal 1. (margin of 1e-6)
+
+    """
     assert len(current) == len(target), "Current and target must have the same length."
     assert n > 0, "n must be a positive integer."
     assert all(x >= 0 for x in current), "Current counts must be non-negative."
