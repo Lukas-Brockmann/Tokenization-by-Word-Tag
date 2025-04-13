@@ -7,38 +7,46 @@ from typing import Dict, List, Tuple, Union
 import pandas as pd
 
 
-def train_tokenizer(
-    text, vocab_size, special_tokens=["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"]
-):
+def train_tokenizer(text: list[str], vocab_size: int) -> tokenizers.Tokenizer:
     """
     Trains a BPE tokenizer on the provided text.
 
     The tokenizer is trained until vocab_size is reached or no more matches of alteast two tokens can be made.
-    There will always be the <UNK> token in the vocabulary, plus any special tokens provided.
+    There following special tokens are added, these take up space in the vocab size:
+    - <UNK>: Unknown token
+    - <PAD>: Padding token
+    - <CLS>: Class token
+    - <SEP>: Separator token
+    - <MASK>: Mask token
+    - ▁: Beginning of word token
 
     Args:
         text (list of str): The text to train the tokenizer on.
         vocab_size (int): The desired vocabulary size.
-        special_tokens (list of str): List of special tokens to include in the vocabulary.
 
     Returns:
         tokenizers.Tokenizer: The trained tokenizer.
 
     Raises:
-        ValueError: If vocab_size is less than the number of special tokens.
-        ValueError: If the text is emtpy or if vocab_size is not a postiive integer
-
+        ValueError: If vocab_size is less than the number of special tokens (6).
+        ValueError: If the text is emtpy or not a list of strings.
+        ValueError: If vocab_size is not a positive integer.
     """
-    if vocab_size < len(special_tokens):
+    if not isinstance(vocab_size, int) or vocab_size <= 0:
+        raise ValueError("Vocab size must be a positive integer.")
+    if vocab_size < 6:
         raise ValueError(
-            "Vocab size must be greater than the number of special tokens."
+            "Vocab size must be at least 6 to accommodate special tokens."
         )
     if not isinstance(text, list) or len(text) == 0:
         raise ValueError("Text must be a non-empty list of strings.")
-    if not isinstance(vocab_size, int) or vocab_size <= 0:
-        raise ValueError("Vocab size must be a positive integer.")
 
-    bpe = tokenizers.Tokenizer(tokenizers.models.BPE(unk_token="<UNK>"))
+    bpe = tokenizers.Tokenizer(tokenizers.models.BPE(
+                                unk_token="<UNK>"),
+                                padding_token="<PAD>",
+                                cls_token="<CLS>",
+                                sep_token="<SEP>",
+                                mask_token="<MASK>"))
 
     # Preprocessing
     bpe.normalizer = tokenizers.normalizers.Sequence(
@@ -53,6 +61,7 @@ def train_tokenizer(
     )
 
     # Trainer
+    special_tokens = ["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"]
     bpe_trainer = tokenizers.trainers.BpeTrainer(
         vocab_size=vocab_size,
         min_frequency=2,
