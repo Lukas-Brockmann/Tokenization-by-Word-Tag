@@ -3,7 +3,7 @@ import tokenizers
 import json
 import tempfile
 import os
-from typing import Dict, List, Tuple, Union
+from typing import Dict, List, Tuple
 import pandas as pd
 
 
@@ -35,18 +35,19 @@ def train_tokenizer(text: list[str], vocab_size: int) -> tokenizers.Tokenizer:
     if not isinstance(vocab_size, int) or vocab_size <= 0:
         raise ValueError("Vocab size must be a positive integer.")
     if vocab_size < 6:
-        raise ValueError(
-            "Vocab size must be at least 6 to accommodate special tokens."
-        )
+        raise ValueError("Vocab size must be at least 6 to accommodate special tokens.")
     if not isinstance(text, list) or len(text) == 0:
         raise ValueError("Text must be a non-empty list of strings.")
 
-    bpe = tokenizers.Tokenizer(tokenizers.models.BPE(
-                                unk_token="<UNK>"),
-                                padding_token="<PAD>",
-                                cls_token="<CLS>",
-                                sep_token="<SEP>",
-                                mask_token="<MASK>"))
+    bpe = tokenizers.Tokenizer(
+        tokenizers.models.BPE(
+            unk_token="[UNK]",
+            padding_token="[PAD]",
+            cls_token="[CLS]",
+            sep_token="[SEP]",
+            mask_token="[MASK]",
+        )
+    )
 
     # Preprocessing
     bpe.normalizer = tokenizers.normalizers.Sequence(
@@ -82,7 +83,7 @@ def train_tokenizer(text: list[str], vocab_size: int) -> tokenizers.Tokenizer:
     bpe.decoder = tokenizers.decoders.Metaspace(replacement="▁")
 
     return bpe
-
+    
 
 def extract_vocab_and_merges(
     tokenizer: tokenizers.Tokenizer,
@@ -112,7 +113,8 @@ def extract_vocab_and_merges(
     finally:
         os.remove(path)
 
-def assign_proportionally(current, target, n) -> np.ndarray:
+
+def assign_proportionally(current: List[int], target: List[int], n: int) -> np.ndarray:
     """
     Assigns n new tokens to the current list of tokens based on the target proportions.
     Args:
@@ -151,3 +153,61 @@ def assign_proportionally(current, target, n) -> np.ndarray:
         target_new[idx] -= 1
 
     return added_indices
+
+def vocab_allocation():
+    pass
+
+def tokenizer_from_vocab_and_merges(
+    tokenizer_type: str,
+    vocab: Dict[str, int],
+    merges: List[Tuple[str, str]],
+    save_path: str = None
+) -> tokenizers.Tokenizer:
+    """
+    Creates a tokenizer from a vocabulary and merges.
+    Args:
+        tokenizer_type (str): The type of tokenizer to create. Options are ["bpe"].
+        vocab (dict): A dictionary mapping tokens to their IDs.
+        merges (list): A list of (token1, token2) tuples representing merge rules.
+        save_path (str): Path to save the tokenizer. If None, the tokenizer is not saved.
+    Returns:
+        tokenizer (Tokenizer): A Hugging Face Tokenizer object.
+    Raises:
+        ValueError: If the tokenizer type is not supported.
+    """
+    
+    match tokenizer_type.lower():
+        case "bpe":
+            tokenizer = tokenizers.Tokenizer(tokenizers.models.BPE(
+                vocab=vocab,
+                merges=merges,
+                unk_token="[UNK]",
+            ))
+        case _:
+            raise ValueError(f"Tokenizer type {tokenizer_type} not supported.")
+
+    tokenizer.add_special_tokens(["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"])
+
+    tokenizer.normalizer = tokenizers.normalizers.Sequence(
+    [
+        tokenizers.normalizers.NFD(),  # Unicode Normalizer
+        tokenizers.normalizers.Lowercase(),
+        tokenizers.normalizers.StripAccents(),
+    ])
+
+    tokenizer.pre_tokenizer = tokenizers.pre_tokenizers.Sequence(
+        [tokenizers.pre_tokenizers.Metaspace()]
+    )
+
+    tokenizer.post_processor = tokenizers.processors.TemplateProcessing(
+    single=f"[CLS]:0 $A:0 [SEP]:0",
+    pair=f"[CLS]:0 $A:0 [SEP]:0 $B:1 [SEP]:1",
+    special_tokens=[
+        ("[CLS]", tokenizer.token_to_id("[CLS]")),
+        ("[SEP]", tokenizer.token_to_id("[SEP]")),
+    ],)
+
+    tokenizer.decoder = tokenizers.decoders.Metaspace(replacement="▁")
+    if save_path:
+        tokenizer.save(save_path)
+    return tokenizer
