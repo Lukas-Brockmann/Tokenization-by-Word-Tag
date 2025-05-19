@@ -79,7 +79,7 @@ def clear_non_UPOS_tags(df):
     if not dropped_tags.empty:
         print(
             f"Dropped {len(dropped_tags)} rows with non-UPOS tags \n"
-            f"Tags dropped: {dropped_tags["UPOS"].unique()}"
+            f"Tags dropped: {dropped_tags['UPOS'].unique()}"
         )
     return df[df["UPOS"].isin(upos_tags)]
 
