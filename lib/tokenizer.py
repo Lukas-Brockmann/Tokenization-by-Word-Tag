@@ -3,11 +3,10 @@ import tokenizers
 import json
 import tempfile
 import os
-from typing import Dict, List, Tuple
 import pandas as pd
 
 
-def train_tokenizer(text: list[str], vocab_size: int) -> tokenizers.Tokenizer:
+def train_tokenizer(text: list[str], vocab_size: int, algorithm: str = "BPE") -> tokenizers.Tokenizer:
     """
     Trains a BPE tokenizer on the provided text.
 
@@ -31,6 +30,7 @@ def train_tokenizer(text: list[str], vocab_size: int) -> tokenizers.Tokenizer:
         ValueError: If vocab_size is less than the number of special tokens (6).
         ValueError: If the text is emtpy or not a list of strings.
         ValueError: If vocab_size is not a positive integer.
+        ValueError: If the selected algorithm is not supported.
     """
     if not isinstance(vocab_size, int) or vocab_size <= 0:
         raise ValueError("Vocab size must be a positive integer.")
@@ -39,55 +39,80 @@ def train_tokenizer(text: list[str], vocab_size: int) -> tokenizers.Tokenizer:
     if not isinstance(text, list) or len(text) == 0:
         raise ValueError("Text must be a non-empty list of strings.")
 
-    bpe = tokenizers.Tokenizer(
-        tokenizers.models.BPE(
-            unk_token="[UNK]",
-            padding_token="[PAD]",
-            cls_token="[CLS]",
-            sep_token="[SEP]",
-            mask_token="[MASK]",
-        )
-    )
+    match algorithm.lower():
+        case "bpe":
+            tokenizer = tokenizers.Tokenizer(
+                tokenizers.models.BPE(
+                    unk_token="[UNK]"
+                )
+            )
+        case "unigram":
+            tokenizer = tokenizers.Tokenizer(
+                tokenizers.models.Unigram()
+            )
+        case "wordpiece":
+            tokenizer = tokenizers.Tokenizer(
+                tokenizers.models.WordPiece(
+                    unk_token="[UNK]"
+                )
+            )
+        case _:
+            raise ValueError(f"Tokenizer algorithm {algorithm} not supported.")
 
     # Preprocessing
-    bpe.normalizer = tokenizers.normalizers.Sequence(
+    tokenizer.normalizer = tokenizers.normalizers.Sequence(
         [
             tokenizers.normalizers.NFD(),  # Unicode Normalizer
             tokenizers.normalizers.Lowercase(),
             tokenizers.normalizers.StripAccents(),
         ]
     )
-    bpe.pre_tokenizer = tokenizers.pre_tokenizers.Sequence(
+    tokenizer.pre_tokenizer = tokenizers.pre_tokenizers.Sequence(
         [tokenizers.pre_tokenizers.Metaspace()]
     )
 
     # Trainer
     special_tokens = ["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"]
-    bpe_trainer = tokenizers.trainers.BpeTrainer(
-        vocab_size=vocab_size,
-        min_frequency=2,
-        special_tokens=special_tokens,
-    )
 
-    bpe.train_from_iterator(text, trainer=bpe_trainer)
+    match algorithm.lower():
+        case "bpe":
+            trainer = tokenizers.trainers.BpeTrainer(
+                vocab_size=vocab_size,
+                min_frequency=2,
+                special_tokens=special_tokens,
+            )
+        case "unigram":
+            trainer = tokenizers.trainers.UnigramTrainer(
+                vocab_size=vocab_size,
+                special_tokens=special_tokens,
+                unk_token="[UNK]"
+            )
+        case "wordpiece":
+            trainer = tokenizers.trainers.WordPieceTrainer(
+                vocab_size=vocab_size,
+                min_frequency=2,
+                special_tokens=special_tokens,
+            )
+
+    tokenizer.train_from_iterator(text, trainer=trainer)
 
     # Postprocessing
-    bpe.post_processor = tokenizers.processors.TemplateProcessing(
+    tokenizer.post_processor = tokenizers.processors.TemplateProcessing(
         single=f"[CLS]:0 $A:0 [SEP]:0",
         pair=f"[CLS]:0 $A:0 [SEP]:0 $B:1 [SEP]:1",
         special_tokens=[
-            ("[CLS]", bpe.token_to_id("[CLS]")),
-            ("[SEP]", bpe.token_to_id("[SEP]")),
+            ("[CLS]", tokenizer.token_to_id("[CLS]")),
+            ("[SEP]", tokenizer.token_to_id("[SEP]")),
         ],
     )
-    bpe.decoder = tokenizers.decoders.Metaspace(replacement="▁")
+    tokenizer.decoder = tokenizers.decoders.Metaspace(replacement="▁")
 
-    return bpe
-    
+    return tokenizer
+
 
 def extract_vocab_and_merges(
     tokenizer: tokenizers.Tokenizer,
-) -> Tuple[Dict[str, int], List[Tuple[str, str]]]:
+) -> tuple[dict[str, int], list[tuple[str, str]]]:
     """
     Given a Tokenizer from the Hugging Face tokenizers library, get the merges performed
 
@@ -106,67 +131,73 @@ def extract_vocab_and_merges(
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
 
-        return data["model"]["vocab"], [
-            tuple(merge) for merge in data["model"]["merges"]
-        ]
+        if "merges" in data["model"].keys():
+            return data["model"]["vocab"], [
+                tuple(merge) for merge in data["model"]["merges"]
+            ]
+        else:
+            return data["model"]["vocab"], [tuple(["", ""])]
 
     finally:
         os.remove(path)
 
 
-def assign_proportionally(current: List[int], target: List[int], n: int) -> np.ndarray:
+def assign_proportionally(current: dict[str, int], target: dict[str, int], n: int) -> np.ndarray:
     """
     Assigns n new tokens to the current list of tokens based on the target proportions.
     Args:
-        current (list): Current distribution.
-        target (list): Desired distribution of tokens in percent.
+        current (dict[str, int]): Current distribution.
+        target (dict[str, int]): Desired distribution of tokens in percent.
         n (int): Number of new tokens to assign.
     Returns:
-        np.ndarray: Array of indices that can be added to current, while maintaining the target proportions.
+        dicht[str, int]: Update of current with n new tokens assigned following the target proportions.
     Raises:
         AssertionError: If the lengths of current and target do not match
+        AssertionError: If the keys of current and target do not match.
         AssertionError: If n is not a positive integer.
-        AssertionError: If any element in current is negative
-        AssertionError: If any element in target is negative.
+        AssertionError: If any values in current are negative
+        AssertionError: If any values in target are negative.
         AssertionError: If the sum of target does not equal 1. (margin of 1e-6)
 
     """
     assert len(current) == len(target), "Current and target must have the same length."
+    assert current.keys() == target.keys(), "Current and target must have the same keys."
     assert n > 0, "n must be a positive integer."
-    assert all(x >= 0 for x in current), "Current counts must be non-negative."
-    assert all(x >= 0 for x in target), "Target percentages must be non-negative."
-    assert abs(sum(target) - 1) < 1e-6, "Target percentages must sum to 1."
+    assert all(x >= 0 for x in current.values()), "Current counts must be non-negative."
+    assert all(x >= 0 for x in target.values()), "Target percentages must be non-negative."
+    assert abs(sum(target.values()) - 1) < 1e-6, "Target percentages must sum to 1."
 
-    if not isinstance(current, np.ndarray):
-        current = np.array(current, dtype=int)
-    if not isinstance(target, np.ndarray):
-        target = np.array(target, dtype=float)
     if not isinstance(n, int):
         n = int(n)
 
-    target_new = (target * (current.sum() + n)) - current.sum()
-    added_indices = np.zeros(len(current), dtype=int)
+    current_np = np.array([current[key] for key in current.keys()], dtype=int)
+    target_np = np.array([target[key] for key in current.keys()], dtype=float)
+
+    target_new = (target_np * (current_np.sum() + n)) - current_np.sum()
+    added_indices = np.zeros(len(current_np), dtype=int)
 
     for _ in range(n):
         idx = np.argmax(target_new)
         added_indices[idx] += 1
         target_new[idx] -= 1
 
-    return added_indices
+    return dict(zip(current.keys(), added_indices + current_np))
+
 
 def vocab_allocation():
     pass
 
+
 def tokenizer_from_vocab_and_merges(
-    tokenizer_type: str,
-    vocab: Dict[str, int],
-    merges: List[Tuple[str, str]],
-    save_path: str = None
+    tokenizer_algorithm: str,
+    vocab: dict[str, int],
+    merges: list[tuple[str, str]],
+    save_path: str = None,
 ) -> tokenizers.Tokenizer:
     """
     Creates a tokenizer from a vocabulary and merges.
     Args:
-        tokenizer_type (str): The type of tokenizer to create. Options are ["bpe"].
+        tokenizer_algorithm (str): The type of tokenizer to create. Options are ["bpe"].
         vocab (dict): A dictionary mapping tokens to their IDs.
         merges (list): A list of (token1, token2) tuples representing merge rules.
         save_path (str): Path to save the tokenizer. If None, the tokenizer is not saved.
@@ -175,39 +206,146 @@ def tokenizer_from_vocab_and_merges(
     Raises:
         ValueError: If the tokenizer type is not supported.
     """
-    
-    match tokenizer_type.lower():
+
+    match tokenizer_algorithm.lower():
         case "bpe":
-            tokenizer = tokenizers.Tokenizer(tokenizers.models.BPE(
-                vocab=vocab,
-                merges=merges,
-                unk_token="[UNK]",
-            ))
+            tokenizer = tokenizers.Tokenizer(
+                tokenizers.models.BPE(
+                    vocab=vocab,
+                    merges=merges,
+                    unk_token="[UNK]",
+                )
+            )
+        case "unigram":
+            unk_id = vocab[('[UNK]', 0.0)]
+            vocab = list(vocab.keys())
+            tokenizer = tokenizers.Tokenizer(
+                tokenizers.models.Unigram(
+                    vocab=vocab,
+                    unk_id=unk_id
+                )
+            )
+        case "wordpiece":
+            tokenizer = tokenizers.Tokenizer(
+                tokenizers.models.WordPiece(
+                    vocab=vocab,
+                    unk_token="[UNK]"
+                )
+            )
         case _:
-            raise ValueError(f"Tokenizer type {tokenizer_type} not supported.")
+            raise ValueError(f"Tokenizer type {tokenizer_algorithm} not supported.")
 
     tokenizer.add_special_tokens(["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"])
 
     tokenizer.normalizer = tokenizers.normalizers.Sequence(
-    [
-        tokenizers.normalizers.NFD(),  # Unicode Normalizer
-        tokenizers.normalizers.Lowercase(),
-        tokenizers.normalizers.StripAccents(),
-    ])
+        [
+            tokenizers.normalizers.NFD(),  # Unicode Normalizer
+            tokenizers.normalizers.Lowercase(),
+            tokenizers.normalizers.StripAccents(),
+        ]
+    )
 
     tokenizer.pre_tokenizer = tokenizers.pre_tokenizers.Sequence(
         [tokenizers.pre_tokenizers.Metaspace()]
     )
 
     tokenizer.post_processor = tokenizers.processors.TemplateProcessing(
-    single=f"[CLS]:0 $A:0 [SEP]:0",
-    pair=f"[CLS]:0 $A:0 [SEP]:0 $B:1 [SEP]:1",
-    special_tokens=[
-        ("[CLS]", tokenizer.token_to_id("[CLS]")),
-        ("[SEP]", tokenizer.token_to_id("[SEP]")),
-    ],)
+        single=f"[CLS]:0 $A:0 [SEP]:0",
+        pair=f"[CLS]:0 $A:0 [SEP]:0 $B:1 [SEP]:1",
+        special_tokens=[
+            ("[CLS]", tokenizer.token_to_id("[CLS]")),
+            ("[SEP]", tokenizer.token_to_id("[SEP]")),
+        ],
+    )
 
     tokenizer.decoder = tokenizers.decoders.Metaspace(replacement="▁")
     if save_path:
         tokenizer.save(save_path)
+    return tokenizer
+
+
+def train_and_merge_tokenizers(
+    train_df: pd.DataFrame,
+    tokenizer_algorithm: str,
+    vocab_size: int,
+    allocation: str,
+    grouping: list[list[str]] = None,
+    strict: bool = True,
+    save_path: str = None,
+) -> tokenizers.Tokenizer:
+
+    if not grouping:  # default to treating each UPOS tag as a seperate group
+        grouping = [
+            ["ADJ"],
+            ["ADP"],
+            ["ADV"],
+            ["AUX"],
+            ["CCONJ"],
+            ["DET"],
+            ["INTJ"],
+            ["NOUN"],
+            ["NUM"],
+            ["PART"],
+            ["PRON"],
+            ["PROPN"],
+            ["PUNCT"],
+            ["SCONJ"],
+            ["SYM"],
+            ["VERB"],
+            ["X"],
+        ]
+
+    tokenizers, merges, vocab, target_allocation = {}, {}, {}, {}
+    special_tokens = ["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"]
+
+    match allocation.lower():
+        case "proportional":
+            allocation = train_df["UPOS"].value_counts(normalize=True).sort_index()
+        case _:
+            raise ValueError(f"Allocation type {allocation} not supported.")
+
+    for group in grouping:
+        group_name = ", ".join(group)
+        text = train_df[train_df["UPOS"].isin(group)]["FORM"].values.tolist()
+        tokenizers[group_name] = train_tokenizer(text, vocab_size, tokenizer_algorithm)
+        vocab[group_name], merges[group_name] = extract_vocab_and_merges(
+            tokenizers[group_name]
+        )
+        target_allocation[group_name] = allocation.loc[
+            allocation.index.intersection(group)
+        ].sum()
+
+    if strict:  # Only ensure space for the five special tokens
+        vocab_allocation = {", ".join(group): 5 for group in grouping}
+
+    vocab_set = set()
+    while len(vocab_set) < vocab_size:
+        vocab_allocation = assign_proportionally(vocab_allocation, target_allocation, vocab_size - len(vocab_set))
+        for group in grouping:
+            group_name = ", ".join(group)
+            if tokenizer_algorithm.lower() == "unigram": # Unigram return (token, score) pairs 
+                vocab_set.update([tuple(pair) for pair in vocab[group_name]][:vocab_allocation[group_name]])
+            else:
+                vocab_set.update(list(vocab[group_name])[:vocab_allocation[group_name]])
+
+    res_vocab = {token: idx for idx, token in enumerate(vocab_set)}
+    res_merges = []
+
+    if tokenizer_algorithm.lower() in ["bpe"]:
+        merges_set = set()
+        for group in grouping:
+            group_name = ", ".join(group)
+            for merge in merges[group_name]:
+                if all(token in vocab_set for token in [merge[0], merge[1], merge[0] + merge[1]]):
+                    merges_set.add(merge)
+
+        res_merges = list(merges_set)
+
+    tokenizer = tokenizer_from_vocab_and_merges(
+        tokenizer_algorithm,
+        res_vocab,
+        res_merges,
+        save_path=save_path
+    )
+    
     return tokenizer

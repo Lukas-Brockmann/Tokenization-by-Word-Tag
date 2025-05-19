@@ -82,3 +82,38 @@ def clear_non_UPOS_tags(df):
             f"Tags dropped: {dropped_tags["UPOS"].unique()}"
         )
     return df[df["UPOS"].isin(upos_tags)]
+
+def conllu_to_list_of_sentences(file_path, clear_non_upos_tags=True):
+    """
+    Converts a CoNLL-U file to a list of sentences.
+
+    Args:
+        path (str): Path to the CoNLL-U file.
+
+    Returns:
+        list: List of sentences, a new sentence is started for every '1' ID.
+    """
+    data_df = load_conllu(file_path)
+    if clear_non_upos_tags:
+        data_df = clear_non_UPOS_tags(data_df)
+
+    sentences = []
+    current_sentence = []
+    df = pd.DataFrame({
+        "ID": data_df.index,
+        "FORM": data_df["FORM"],
+    })
+
+    for _, row in df.iterrows():
+        if row["ID"] == '1' and len(current_sentence) > 0: 
+            # New sentence whenever ID is '1'
+            sentences.append(" ".join(current_sentence))
+            current_sentence = []
+
+        current_sentence.append(row["FORM"])
+
+    # Add the last sentence
+    if current_sentence:
+        sentences.append(" ".join(current_sentence))
+
+    return sentences
