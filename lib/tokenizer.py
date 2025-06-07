@@ -295,11 +295,11 @@ def train_and_merge_tokenizers(
             ["X"],
         ]
 
-    tokenizers, merges, vocab, target_allocation = {}, {}, {}, {}
+    tokenizers, merges, vocab, target_allocation, group_vocab_size = {}, {}, {}, {}, {}
     special_tokens = ["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"]
 
     # Ensure the Form column can be converted to string
-    train_df["FORM"] = train_df.dropna(subset=["FORM"])
+    train_df.dropna(subset=["FORM"], inplace=True)
     train_df["FORM"] = train_df["FORM"].astype(str)
 
     match allocation.lower():
@@ -311,7 +311,10 @@ def train_and_merge_tokenizers(
     for group in grouping:
         group_name = ", ".join(group)
         text = train_df[train_df["UPOS"].isin(group)]["FORM"].values.tolist()
+        if not text:
+            text = [""]
         tokenizers[group_name] = train_tokenizer(text, vocab_size, tokenizer_algorithm)
+        group_vocab_size[group_name] = tokenizers[group_name].get_vocab_size()
         vocab[group_name], merges[group_name] = extract_vocab_and_merges(
             tokenizers[group_name]
         )
@@ -323,10 +326,23 @@ def train_and_merge_tokenizers(
         vocab_allocation = {", ".join(group): 5 for group in grouping}
 
     vocab_set = set()
-    while len(vocab_set) < vocab_size:
+    exhausted = False
+    while len(vocab_set) < vocab_size and not exhausted:
         vocab_allocation = assign_proportionally(vocab_allocation, target_allocation, vocab_size - len(vocab_set))
         for group in grouping:
             group_name = ", ".join(group)
+
+            # If the tokenizer trained on a group has no new tokens to allocate, we try to allocate the remaining tokens to other groups
+            # If all groups are exhausted, we stop the allocation process
+            if vocab_allocation[group_name] > group_vocab_size[group_name]:
+                target_allocation[group_name] = 0
+                total = sum(target_allocation.values())
+                if total == 0:
+                    print("Warning: No tokens left to allocate. All groups have been exhausted.")
+                    exhausted = True
+                    break
+                target_allocation = {key: value / total for key, value in target_allocation.items()}
+
             if tokenizer_algorithm.lower() == "unigram": # Unigram return (token, score) pairs 
                 vocab_set.update([tuple(pair) for pair in vocab[group_name]][:vocab_allocation[group_name]])
             else:
