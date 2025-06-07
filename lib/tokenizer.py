@@ -298,6 +298,10 @@ def train_and_merge_tokenizers(
     tokenizers, merges, vocab, target_allocation = {}, {}, {}, {}
     special_tokens = ["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"]
 
+    # Ensure the Form column can be converted to string
+    train_df["FORM"] = train_df.dropna(subset=["FORM"])
+    train_df["FORM"] = train_df["FORM"].astype(str)
+
     match allocation.lower():
         case "proportional":
             allocation = train_df["UPOS"].value_counts(normalize=True).sort_index()
