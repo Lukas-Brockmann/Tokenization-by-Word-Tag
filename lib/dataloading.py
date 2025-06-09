@@ -40,7 +40,7 @@ def load_conllu(file_path):
     return df
 
 
-def clear_non_UPOS_tags(df):
+def clear_non_UPOS_tags(df, verbose=False):
     """
     Clears non-UPOS tags from the DataFrame.
 
@@ -76,12 +76,21 @@ def clear_non_UPOS_tags(df):
         "X",
     ]
     dropped_tags = df[~df["UPOS"].isin(upos_tags)]
-    if not dropped_tags.empty:
+    if not dropped_tags.empty and verbose:
         print(
             f"Dropped {len(dropped_tags)} rows with non-UPOS tags \n"
             f"Tags dropped: {dropped_tags['UPOS'].unique()}"
         )
     return df[df["UPOS"].isin(upos_tags)]
+
+def preprocess(df, verbose=False) -> pd.DataFrame:
+    initial_len = len(df)
+    df.dropna(subset=["FORM"], inplace=True)
+    if verbose and initial_len != len(df):
+        print(f"Dropped {initial_len - len(df)} rows with NaN in 'FORM' column.")
+    df["FORM"] = df["FORM"].astype(str)
+    df = clear_non_UPOS_tags(df, verbose=verbose)
+    return df
 
 def conllu_to_list_of_sentences(file_path, clear_non_upos_tags=True):
     """
