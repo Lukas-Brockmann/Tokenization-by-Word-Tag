@@ -269,6 +269,7 @@ def train_and_merge_tokenizers(
     tokenizer_algorithm: str,
     vocab_size: int,
     allocation: str,
+    allocation_weights: list[float] = None,
     grouping: list[list[str]] = None,
     strict: bool = True,
     save_path: str = None,
@@ -295,6 +296,14 @@ def train_and_merge_tokenizers(
             ["X"],
         ]
 
+    if allocation.lower() == "weighted_proportional":
+        if allocation_weights is None:
+            raise ValueError("Allocation weights must be provided for weighted proportional allocation.")
+        if len(allocation_weights) != len(grouping):
+            raise ValueError("Allocation weights must match the number of groups.")
+        if any(weight < 0 for weight in allocation_weights):
+            raise ValueError("Allocation weights must be non-negative.")
+
     tokenizers, merges, vocab, target_allocation, group_vocab_size = {}, {}, {}, {}, {}
     special_tokens = ["[UNK]", "[PAD]", "[CLS]", "[SEP]", "[MASK]"]
 
@@ -305,6 +314,16 @@ def train_and_merge_tokenizers(
     match allocation.lower():
         case "proportional":
             allocation = train_df["UPOS"].value_counts(normalize=True).sort_index()
+            for group in grouping:
+                group_name = ", ".join(group)
+                target_allocation[group_name] = allocation.loc[allocation.index.intersection(group)].sum()
+        case "weighted_proportional":
+            allocation = train_df["UPOS"].value_counts(normalize=True).sort_index()
+            for weight, group in zip(allocation_weights, grouping):
+                group_name = ", ".join(group)
+                target_allocation[group_name] = allocation.loc[allocation.index.intersection(group)].sum() * weight
+            target_allocation = {k: v / sum(target_allocation.values()) for k, v in target_allocation.items()}
+            assert sum(target_allocation.values()) - 1 < 1e-6, "Target allocation must sum to 1."
         case _:
             raise ValueError(f"Allocation type {allocation} not supported.")
 
